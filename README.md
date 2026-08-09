@@ -4,7 +4,6 @@
 ![Pandas](https://img.shields.io/badge/Pandas-150458?style=flat&logo=pandas&logoColor=white)
 ![PostgreSQL](https://img.shields.io/badge/PostgreSQL-4169E1?style=flat&logo=postgresql&logoColor=white)
 ![Great Expectations](https://img.shields.io/badge/Great%20Expectations-FF6F00?style=flat&logoColor=white)
-![Apache Airflow](https://img.shields.io/badge/Apache%20Airflow-017CEE?style=flat&logo=apacheairflow&logoColor=white)
 ![MLflow](https://img.shields.io/badge/MLflow-0194E2?style=flat&logo=mlflow&logoColor=white)
 ![MinIO](https://img.shields.io/badge/MinIO-C72E49?style=flat&logo=minio&logoColor=white)
 ![Docker](https://img.shields.io/badge/Docker-2496ED?style=flat&logo=docker&logoColor=white)
@@ -48,9 +47,18 @@ This gives you a dataset that is both realistic in its problem shape and fully r
   - Outlier detection and treatment (IQR/z-score) on numeric fields, with documented business rules for what gets flagged vs. corrected vs. dropped
   - Multi-file consolidation with conflict resolution (e.g. same entity reported differently across two files landing the same month)
 - **Validation:** Great Expectations suites run against the *refined* output — completeness, referential integrity, business-rule expectations (e.g. `revenue >= 0`, valid date ranges) — acting as the data contract before promotion.
-- **Orchestration:** Airflow DAG with the refinement step gating the load step — if GE validation fails, the run stops and the warehouse table is not updated.
+- **Execution & gating:** `src/main.py` runs one full pipeline pass for a given month — ingest → reconcile → refine → validate → load/quarantine → log metrics — entirely in-process. If GE validation fails, it raises and the process exits non-zero *before* touching the warehouse; nothing about this decision depends on any external scheduler.
 - **Storage:** Refined, validated data lands in PostgreSQL as the "trusted" table; rejected/flagged records are quarantined in a separate table with the reason for rejection.
 - **Observability:** Data quality metrics (% duplicates found, % records requiring correction, % failed validations) are logged to MLflow as artifacts per run, so quality trends are trackable over time — not just pass/fail.
+
+## Two-Layer Architecture
+
+This repo is deliberately scoped to the **execution layer only**, and is agnostic to whatever schedules it:
+
+1. **Execution layer (this repo).** A self-contained Docker image (see `Dockerfile`) that takes its configuration entirely from environment variables, runs the pipeline for one vendor-drop month, and communicates success or failure purely through its process exit code (`0` = success, non-zero = failure — see `src/main.py`). It has no knowledge of Airflow, cron, or any other scheduler.
+2. **Orchestration layer (a separate `orchestration-hub` repo, not here).** A single Airflow instance shared across this portfolio's projects schedules this image, retries it, and alerts on failure by watching its exit code. No DAG code lives in this repository.
+
+`docker-compose.yml` in this repo exists purely for **local development** — it spins up the backing services this pipeline talks to (MinIO, Postgres, MLflow) so the image can be built and run locally without real infrastructure. It is not an orchestration layer.
 
 ## Tech Stack
 
@@ -58,16 +66,16 @@ This gives you a dataset that is both realistic in its problem shape and fully r
 - `boto3` + MinIO (S3-compatible object storage)
 - Great Expectations (data contracts/validation layer)
 - PostgreSQL 15 (trusted warehouse + quarantine tables)
-- Apache Airflow 2.x (orchestration, quality gate)
 - MLflow (quality metrics as artifacts over time)
-- Docker & Docker Compose
+- Docker (self-contained execution image); Docker Compose (local dev services only)
 
 ## What This Demonstrates
 
 - Deep, non-trivial Pandas usage: schema reconciliation across drifted versions, fuzzy deduplication, custom outlier logic, multi-source conflict resolution — not just `read_csv` + `groupby`
 - Reading from object storage (S3-compatible) rather than a static local file, mirroring a real ingestion boundary
 - Data quality treated as a first-class, measurable, trackable engineering concern rather than a one-off check
-- Separation of concerns: Pandas owns *refinement*, Great Expectations owns *contract enforcement*, Airflow owns *gating*
+- Separation of concerns: Pandas owns *refinement*, Great Expectations owns *contract enforcement*, this image's exit code owns *gating*, and an external orchestrator owns *scheduling*
+- A pipeline built as a portable, orchestrator-agnostic unit of execution — the kind of contract a real platform team expects from any job it schedules
 - Designed for a realistic Jr–Mid Data Engineer scope: complex enough to show real skill, scoped enough to actually finish
 
 ## Status
@@ -75,9 +83,9 @@ This gives you a dataset that is both realistic in its problem shape and fully r
 
 ## Project Structure
 ```
-├── dags/
-│   └── vendor_reconciliation_dag.py
 ├── src/
+│   ├── main.py             # single entrypoint: env vars in, exit code out
+│   ├── config.py           # centralized settings from env vars
 │   ├── generator/          # synthetic drift generator (creates the 24 monthly drops)
 │   ├── ingestion/          # boto3 readers, file-type/encoding detection
 │   ├── reconciliation/     # schema registry + column mapping logic
@@ -89,6 +97,7 @@ This gives you a dataset that is both realistic in its problem shape and fully r
 ├── schema_registry/
 │   └── vendor_schema_v1..v6.yml
 ├── tests/
-├── docker-compose.yml
+├── Dockerfile               # the execution-layer image; what orchestration-hub runs
+├── docker-compose.yml       # local dev backing services only (minio, postgres, mlflow)
 └── README.md
 ```

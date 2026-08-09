@@ -1,0 +1,32 @@
+# schema_registry/vendor_schema_v1.yml
+#
+# Template / example for one schema version entry. Copy this pattern for
+# each additional version your drift generator introduces, adjusting
+# valid_from / valid_to / column_mapping / dtypes / date_format to match
+# what that version of the "vendor export" actually looks like.
+
+version: 1
+valid_from: "2022-01"   # first year-month this schema shape applies to
+valid_to: "2022-06"     # last year-month it applies to (inclusive)
+
+# raw_column_name -> canonical_column_name
+# Fill this in based on what src/generator/drift_generator.py actually
+# names columns for this version.
+column_mapping:
+  customer_name: client_name
+  transaction_date: transaction_date
+  amount: revenue
+  city: city
+
+# canonical_column_name -> target dtype
+# Supported dtype tokens are whatever you decide to support in
+# src/refinement/type_coercion.py — suggested: string, int, float, date, bool
+dtypes:
+  client_name: string
+  transaction_date: date
+  revenue: float
+  city: string
+
+# Only relevant for date columns. Either a strftime pattern
+# (e.g. "%Y-%m-%d", "%d/%m/%Y") or the literal string "excel_serial".
+date_format: "%Y-%m-%d"
